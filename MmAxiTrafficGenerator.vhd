@@ -1,0 +1,552 @@
+--  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+--
+--    .d8888. d8888b.  .d8b.   .o88b. d88888b       .o88b. db   db d888888b  .o88b. db   dD d88888b d8b   db
+--    88'  YP 88  `8D d8' `8b d8P  Y8 88'          d8P  Y8 88   88   `88'   d8P  Y8 88 ,8P' 88'     888o  88
+--    `8bo.   88oodD' 88ooo88 8P      88ooooo      8P      88ooo88    88    8P      88,8P   88ooooo 88V8o 88
+--      `Y8b. 88      88   88 8b      88      C88D 8b      88   88    88    8b      88`8b   88      88 V8o88
+--    db   8D 88      88   88 Y8b  d8 88.          Y8b  d8 88   88   .88.   Y8b  d8 88 `88. 88.     88  V888 
+--    `8888Y' 88      YP   YP  `Y88P' Y88888P       `Y88P' YP   YP Y888888P  `Y88P' YP   YD Y88888P VP   V8P
+--
+--  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+--  Description: Memory-mapped AXI traffic generator.
+--  
+--  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+library ieee, work;
+  use ieee.std_logic_1164.all;
+  use ieee.std_logic_unsigned.all;
+  use ieee.numeric_std.all;
+
+entity TrafficGenerator is
+  generic
+  (
+    G_TIMEBASE_WIDTH        : integer := 32;
+    G_ADDRESS_WIDTH         : integer := 32;
+    G_COUNTERS_WIDTH        : integer := 32;
+    G_AXI_DATA_WIDTH        : integer := 128;
+    G_AXI_ADDR_WIDTH        : integer := 49
+  );
+  port
+  (
+    ------------------------------------------------------
+    -- CLOCK & RESET
+    ------------------------------------------------------
+    i_clock                 : in  std_logic;
+    i_reset                 : in  std_logic;
+
+    ------------------------------------------------------
+    -- CONTROL & STATUS SIGNALS
+    ------------------------------------------------------
+    i_transfers_count       : in  std_logic_vector(( G_COUNTERS_WIDTH        - 1) downto 0);        -- Total number of transfers
+    i_burst_size            : in  std_logic_vector(( G_COUNTERS_WIDTH        - 1) downto 0);        -- Burst size = ((number_of_bytes) / 32)
+    i_address               : in  std_logic_vector(( G_ADDRESS_WIDTH         - 1) downto 0);        -- Start address for sequential and random accesses
+    i_boundary              : in  std_logic_vector(( G_ADDRESS_WIDTH         - 1) downto 0);        -- Last address
+    i_run                   : in  std_logic;                                                        -- Module control signal
+    i_random                : in  std_logic;                                                        -- Random address generation
+    i_read_enb              : in  std_logic;                                                        -- Read channel enable
+    i_write_enb             : in  std_logic;                                                        -- Write channel enable
+    o_busy                  : out std_logic;                                                        -- Busy signal
+    o_done                  : out std_logic;                                                        -- Complete signal
+
+    ------------------------------------------------------
+    -- TIMEBASE
+    ------------------------------------------------------
+    i_timebase              : in  std_logic_vector(( G_TIMEBASE_WIDTH      - 1) downto 0);          -- Free running timebase that is used to capture start/stop time
+
+    ------------------------------------------------------
+    -- RANDOM GENERATOR SIGNALS
+    ------------------------------------------------------
+    i_seed                  : in  std_logic_vector(( G_AXI_DATA_WIDTH      - 1) downto 0);
+    i_load                  : in  std_logic;
+
+    ------------------------------------------------------
+    -- STATISTIC COUNTERS
+    ------------------------------------------------------
+    o_read_count            : out std_logic_vector(( G_COUNTERS_WIDTH      - 1) downto 0);          -- Total number of read transfers
+    o_write_count           : out std_logic_vector(( G_COUNTERS_WIDTH      - 1) downto 0);          -- Total number of write transfers
+    o_error_count           : out std_logic_vector(( G_COUNTERS_WIDTH      - 1) downto 0);          -- Total number of error
+    o_start                 : out std_logic_vector(( G_TIMEBASE_WIDTH      - 1) downto 0);          -- Transfer start timestamp
+    o_stop                  : out std_logic_vector(( G_TIMEBASE_WIDTH      - 1) downto 0);          -- Transfer stop timestamp
+
+    ------------------------------------------------------
+    -- MEMORY-MAPPED AXI
+    ------------------------------------------------------
+    -- AXI write address channel
+    o_axi_awaddr            : out std_logic_vector(( G_AXI_ADDR_WIDTH      - 1) downto 0);
+    o_axi_awlen             : out std_logic_vector(                          7  downto 0);
+    o_axi_awsize            : out std_logic_vector(                          2  downto 0);
+    o_axi_awburst           : out std_logic_vector(                          1  downto 0);
+    o_axi_awcache           : out std_logic_vector(                          3  downto 0);
+    o_axi_awprot            : out std_logic_vector(                          2  downto 0)   := (others => '0');
+    o_axi_awid              : out std_logic_vector(                          5  downto 0)   := (others => '0');
+    o_axi_awuser            : out std_logic                                                 := '0';
+    i_axi_awready           : in  std_logic;
+    o_axi_awvalid           : out std_logic;
+
+    -- AXI write channel
+    o_axi_wdata             : out std_logic_vector(( G_AXI_DATA_WIDTH      - 1) downto 0);
+    o_axi_wstrb             : out std_logic_vector(((G_AXI_DATA_WIDTH / 8) - 1) downto 0);
+    o_axi_wlast             : out std_logic;
+    i_axi_wready            : in  std_logic;
+    o_axi_wvalid            : out std_logic;
+
+    -- AXI write response channel
+    i_axi_bid               : in  std_logic_vector(                          5  downto 0);
+    i_axi_bresp             : in  std_logic_vector(                          1  downto 0);
+    o_axi_bready            : out std_logic;
+    i_axi_bvalid            : in  std_logic;
+    
+    -- AXI read address channel
+    o_axi_araddr            : out std_logic_vector(( G_AXI_ADDR_WIDTH      - 1) downto 0);
+    o_axi_arlen             : out std_logic_vector(                          7  downto 0);
+    o_axi_arsize            : out std_logic_vector(                          2  downto 0);
+    o_axi_arburst           : out std_logic_vector(                          1  downto 0);
+    o_axi_arcache           : out std_logic_vector(                          3  downto 0);
+    o_axi_arprot            : out std_logic_vector(                          2  downto 0)   := (others => '0');
+    o_axi_arid              : out std_logic_vector(                          5  downto 0)   := (others => '0');
+    o_axi_aruser            : out std_logic                                                 := '0';
+    i_axi_arready           : in  std_logic;
+    o_axi_arvalid           : out std_logic;
+
+    -- AXI read channel
+    i_axi_rdata             : in  std_logic_vector(( G_AXI_DATA_WIDTH      - 1) downto 0);
+    i_axi_rid               : in  std_logic_vector(                          5  downto 0);
+    i_axi_rresp             : in  std_logic_vector(                          1  downto 0);
+    i_axi_rlast             : in  std_logic;
+    o_axi_rready            : out std_logic;
+    i_axi_rvalid            : in  std_logic
+  );
+end entity;
+
+architecture RTL of TrafficGenerator is
+
+  ------------------------------------------------------
+  -- CONSTANTS
+  ------------------------------------------------------
+  constant K_MAX_BURST_SIZE             : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0) := x"00001000";   -- 4096 bytes
+  constant K_MIN_BURST_SIZE             : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0) := x"00000020";   -- 32 bytes
+  constant K_AXI_CACHE_CONFIG           : std_logic_vector(                    3  downto 0) := b"0000";       -- Device is not bufferable
+
+  -- AXI xRESP values
+  constant AXI_BRESP_OKAY               : std_logic_vector(                    1  downto 0) := b"00";
+  constant AXI_BRESP_EXOKAY             : std_logic_vector(                    1  downto 0) := b"01";
+  constant AXI_BRESP_SLVERR             : std_logic_vector(                    1  downto 0) := b"10";
+  constant AXI_BRESP_DECERR             : std_logic_vector(                    1  downto 0) := b"11";
+
+  ------------------------------------------------------
+  -- SIGNALS
+  ------------------------------------------------------
+  signal burst_size_valid               : std_logic                                         := '0';
+  signal transfer_count_valid           : std_logic                                         := '0';
+  signal ready                          : std_logic                                         := '0';
+  signal run                            : std_logic                                         := '0';
+  signal enable                         : std_logic                                         := '0';
+  signal done                           : std_logic                                         := '0';
+  signal busy                           : std_logic                                         := '0';
+  signal wait_response                  : std_logic                                         := '0';
+  signal wait_data                      : std_logic                                         := '0';
+  signal axi_awvalid                    : std_logic                                         := '0';
+  signal axi_arvalid                    : std_logic                                         := '0';
+  signal axi_rready                     : std_logic                                         := '0';
+  signal axi_bready                     : std_logic                                         := '0';
+  signal axi_wvalid                     : std_logic                                         := '0';
+  signal axi_wlast                      : std_logic                                         := '0';
+  signal timestamp_captured             : std_logic                                         := '0';
+  signal beat_count                     : std_logic_vector(                    7  downto 0) := (others => '0');
+  signal beat_counter                   : std_logic_vector(                    7  downto 0) := (others => '0');
+  signal nxt_write_addr                 : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
+  signal write_address                  : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
+  signal nxt_read_addr                  : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
+  signal read_address                   : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
+  signal write_data                     : std_logic_vector((G_AXI_DATA_WIDTH - 1) downto 0) := (others => '0');
+  signal write_responses                : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0) := (others => '0');
+  signal write_errors                   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0) := (others => '0');
+  signal read_errors                    : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0) := (others => '0');
+  signal axi_awaddr                     : std_logic_vector((G_AXI_DATA_WIDTH - 1) downto 0) := (others => '0');
+  signal axi_araddr                     : std_logic_vector((G_AXI_DATA_WIDTH - 1) downto 0) := (others => '0');
+  signal read_counter                   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0) := (others => '0');
+  signal write_counter                  : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0) := (others => '0');
+  signal random_data                    : std_logic_vector((G_AXI_DATA_WIDTH - 1) downto 0) := (others => '0');
+  signal start_timestamp                : std_logic_vector((G_TIMEBASE_WIDTH - 1) downto 0) := (others => '0');
+  signal stop_timestamp                 : std_logic_vector((G_TIMEBASE_WIDTH - 1) downto 0) := (others => '0');
+
+  ------------------------------------------------------
+  -- ATTRIBUTES (DEBUG)
+  ------------------------------------------------------
+  attribute KEEP                        : string;
+  attribute KEEP of ready               : signal is "TRUE";
+  attribute KEEP of run                 : signal is "TRUE";
+  attribute KEEP of enable              : signal is "TRUE";
+  attribute KEEP of done                : signal is "TRUE";
+  attribute KEEP of busy                : signal is "TRUE";
+  attribute KEEP of wait_response       : signal is "TRUE";
+  attribute KEEP of wait_data           : signal is "TRUE";
+  attribute KEEP of beat_count          : signal is "TRUE";
+  attribute KEEP of beat_counter        : signal is "TRUE";
+  attribute KEEP of write_data          : signal is "TRUE";
+  attribute KEEP of read_address        : signal is "TRUE";
+  attribute KEEP of write_responses     : signal is "TRUE";
+  attribute KEEP of read_counter        : signal is "TRUE";
+  attribute KEEP of write_counter       : signal is "TRUE";
+  attribute KEEP of start_timestamp     : signal is "TRUE";
+  attribute KEEP of stop_timestamp      : signal is "TRUE";
+
+  ------------------------------------------------------
+  -- FUNCTIONS
+  ------------------------------------------------------
+  function log2 (number : integer) return integer is
+    variable index  : integer;
+  begin
+    index := 0;  
+    while (2**index < number) and index < 31 loop
+      index         := index + 1;
+    end loop;
+    return index;
+  end function;
+  
+begin
+
+  -- =======================
+  --         OUTPUTS        
+  -- =======================
+  o_error_count             <= read_errors + write_errors;
+  o_write_count             <= write_responses;
+  o_read_count              <= read_counter;
+  o_done                    <= done;
+  o_busy                    <= busy;
+
+  -- =======================
+  --      CONTROL LOGIC
+  -- =======================
+  -- AXI signals
+  o_axi_araddr((G_COUNTERS_WIDTH - 1) downto 0) <= read_address  when i_run = '1' else (others => '0');
+  o_axi_awaddr((G_COUNTERS_WIDTH - 1) downto 0) <= write_address when i_run = '1' else (others => '0');
+
+  UnusedAddressBits: if G_AXI_ADDR_WIDTH > G_COUNTERS_WIDTH generate
+    o_axi_araddr((G_AXI_ADDR_WIDTH - 1) downto G_COUNTERS_WIDTH) <= (others => '0');
+    o_axi_awaddr((G_AXI_ADDR_WIDTH - 1) downto G_COUNTERS_WIDTH) <= (others => '0');
+  end generate;
+
+  -- AXI specification require o_axi_awlen to be (beat_count - 1)
+  o_axi_awlen               <= (beat_count - 1) when i_run = '1' and ready = '1' else (o_axi_awlen'range   => '0');
+  o_axi_awburst             <= "01"             when i_run = '1' and ready = '1' else (o_axi_awburst'range => '0');
+  o_axi_awsize              <= "001" when G_AXI_DATA_WIDTH =   16 and i_run = '1' and ready = '1' else
+                               "010" when G_AXI_DATA_WIDTH =   32 and i_run = '1' and ready = '1' else
+                               "011" when G_AXI_DATA_WIDTH =   64 and i_run = '1' and ready = '1' else
+                               "100" when G_AXI_DATA_WIDTH =  128 and i_run = '1' and ready = '1' else
+                               "101" when G_AXI_DATA_WIDTH =  256 and i_run = '1' and ready = '1' else
+                               "110" when G_AXI_DATA_WIDTH =  512 and i_run = '1' and ready = '1' else
+                               "111" when G_AXI_DATA_WIDTH = 1024 and i_run = '1' and ready = '1' else "000";
+
+  -- AXI specification require o_axi_arlen to be (beat_count - 1)
+  o_axi_arlen               <= (beat_count - 1) when i_run = '1' and ready = '1' else (o_axi_arlen'range   => '0');
+  o_axi_arburst             <= "01"             when i_run = '1' and ready = '1' else (o_axi_arburst'range => '0');
+  o_axi_arsize              <= "001" when G_AXI_DATA_WIDTH =   16 and i_run = '1' and ready = '1' else
+                               "010" when G_AXI_DATA_WIDTH =   32 and i_run = '1' and ready = '1' else
+                               "011" when G_AXI_DATA_WIDTH =   64 and i_run = '1' and ready = '1' else
+                               "100" when G_AXI_DATA_WIDTH =  128 and i_run = '1' and ready = '1' else
+                               "101" when G_AXI_DATA_WIDTH =  256 and i_run = '1' and ready = '1' else
+                               "110" when G_AXI_DATA_WIDTH =  512 and i_run = '1' and ready = '1' else
+                               "111" when G_AXI_DATA_WIDTH = 1024 and i_run = '1' and ready = '1' else "000";
+
+  o_axi_rready              <= axi_rready;
+  o_axi_bready              <= axi_bready;
+
+  o_axi_wvalid              <= axi_wvalid and i_axi_wready;
+  o_axi_wlast               <= axi_wlast  and i_axi_wready;
+
+  o_axi_awvalid             <= axi_awvalid and i_axi_awready;
+  o_axi_arvalid             <= axi_arvalid and i_axi_arready;
+
+  -- Valid input parameters
+  burst_size_valid          <= '1' when (i_burst_size <= K_MAX_BURST_SIZE and i_burst_size >= K_MIN_BURST_SIZE) else '0';
+  transfer_count_valid      <= '1' when (i_transfers_count > (i_transfers_count'range => '0'))                  else '0';
+  
+  -- Beat count = (Burst size) / ((AXI data width) / 8) = ((Burst size) / 16);
+  beat_count((log2(G_AXI_DATA_WIDTH / 8) - 1) downto                         0 ) <= i_burst_size(beat_count'high downto log2(G_AXI_DATA_WIDTH / 8));
+  beat_count(beat_count'high                  downto log2(G_AXI_DATA_WIDTH / 8)) <= (others => '0');
+
+  -- Control signals
+  ready                     <= burst_size_valid and transfer_count_valid;
+  run                       <= enable and ready;
+  done                      <= '1' when ((read_counter = i_transfers_count and wait_data = '0') or i_read_enb = '0') and ((write_counter = i_transfers_count and wait_response = '0') or i_write_enb = '0') and ready = '1' else '0';
+  busy                      <= (enable or wait_response or wait_data) and ready;
+
+  -- Module run control
+  RunStopControl: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      if i_reset = '1' then
+        enable              <= '0';
+      else
+        if i_run = '1' and ready = '1' and done = '0' then
+          enable            <= '1';
+        elsif i_run = '0' or ready = '0' or done = '1' then
+          enable            <= '0';
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- Requests sender
+  ReadRequester: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      if i_reset = '1' or i_read_enb = '0' then
+        axi_arvalid         <= '0';
+      else
+        axi_arvalid         <= '0';
+        if run = '1' and read_counter < i_transfers_count and i_axi_arready = '1' and wait_data = '0' then
+          axi_arvalid       <= '1';
+          wait_data         <= '1';
+        elsif i_axi_rlast = '1' and wait_data = '1' then
+          wait_data         <= '0';
+        end if;
+      end if;
+    end if;
+  end process;
+
+  WriteRequester: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      if i_reset = '1' or i_write_enb = '0' then
+        axi_awvalid         <= '0';
+        wait_response       <= '0';
+      else
+        axi_awvalid         <= '0';
+        if run = '1' and write_counter < i_transfers_count and i_axi_awready = '1' and wait_response = '0' then
+          axi_awvalid       <= '1';
+          wait_response     <= '1';
+        elsif i_axi_bvalid = '1' and wait_response = '1' then
+          wait_response     <= '0';
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- Update addresses
+  ReadAddressChange: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      -- On stop, set default address
+      if enable = '0' or i_read_enb = '0' then
+        read_address        <= i_address;
+      else
+        -- Set new address with staged value
+        if axi_arvalid = '1' then
+          read_address      <= nxt_read_addr;
+        end if;
+      end if;
+    end if;
+  end process;
+
+  WriteAddressChange: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      -- On stop, set default address
+      if enable = '0' or i_write_enb = '0' then
+        write_address       <= i_address;
+      else
+        -- Set new address with staged value
+        if axi_awvalid = '1' then
+          write_address     <= nxt_write_addr;
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- =======================
+  --     DATA GENERATOR     
+  -- =======================
+  PseudoRandomDataGenerator: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      if i_load = '1' then
+        random_data         <= i_seed;
+      elsif random_data > (random_data'range => '0') then
+        random_data((G_AXI_DATA_WIDTH - 1) downto 1) <= random_data((G_AXI_DATA_WIDTH - 2) downto 0);
+        random_data(0)      <= random_data(126) xor random_data(125) xor random_data(124) xor random_data(89) xor random_data(88);
+      end if;
+
+      write_data            <= random_data;
+    end if;
+  end process;
+
+  -- =======================
+  --    ADDRESS GENERATOR     
+  -- =======================
+  NextReadAddress: process(i_clock)
+    variable random_value   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
+    variable last_address   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
+  begin
+    if rising_edge(i_clock) then
+      if enable = '1' and i_read_enb = '1' then
+        -- Generate next random address within range of allowed addresses
+        if i_random = '1' then
+          random_value      := write_data(53 downto 26) & b"0000";
+          last_address      := nxt_read_addr + i_burst_size;
+          if last_address < i_boundary and random_value > i_address then
+            nxt_read_addr   <= random_value;
+          end if;
+        else
+          if axi_arvalid = '1' then
+            nxt_read_addr   <= nxt_read_addr + i_burst_size;
+            if nxt_read_addr >= i_boundary then
+              nxt_read_addr <= i_address;
+            end if;
+          end if;
+        end if;
+      else
+        if i_random = '0' then
+          nxt_read_addr     <= i_address + i_burst_size;
+        end if;
+      end if;
+    end if;
+  end process;
+
+  NextWriteAddress: process(i_clock)
+    variable random_value   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
+    variable last_address   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
+  begin
+    if rising_edge(i_clock) then
+      if enable = '1' and i_write_enb = '1' then
+        -- Generate next random address within range of allowed addresses
+        if i_random = '1' then
+          random_value      := write_data(71 downto 44) & b"0000";
+          last_address      := nxt_write_addr + i_burst_size;
+          if last_address < i_boundary and random_value > i_address then
+            nxt_write_addr  <= random_value;
+          end if;
+        else
+          if axi_awvalid = '1' then
+            nxt_write_addr  <= nxt_write_addr + i_burst_size;
+            if nxt_write_addr >= i_boundary then
+              nxt_write_addr <= i_address;
+            end if;
+          end if;
+        end if;
+      else
+        if i_random = '0' then
+          nxt_write_addr    <= i_address + i_burst_size;
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- =======================
+  --      READ CHANNEL     
+  -- =======================
+  ReadCompleter: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      if i_reset = '1' or i_run = '0' or i_read_enb = '0' then
+        read_counter        <= (others => '0');
+        read_errors         <= (others => '0');
+        axi_rready          <= '0';
+      else
+        axi_rready          <= '1';
+
+        if i_axi_rvalid = '1' then
+          if i_axi_rresp = AXI_BRESP_SLVERR or i_axi_rresp = AXI_BRESP_DECERR then
+            read_errors     <= read_errors + 1;
+          end if;
+
+          if i_axi_rlast = '1' then
+            read_counter    <= read_counter + 1;
+          end if;
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- =======================
+  --      WRITE CHANNEL     
+  -- =======================
+  DataWriter: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      if i_reset = '1' or i_write_enb = '0' or i_run = '0' then
+        write_counter       <= (others => '0');
+        beat_counter        <= (others => '0');
+        axi_wvalid          <= '0';
+        axi_wlast           <= '0';
+        o_axi_wstrb         <= (others => '0');
+      else
+        axi_wlast           <= '0';
+        axi_wvalid          <= '0';
+        o_axi_wstrb         <= (others => '0');
+
+        if wait_response = '1' then
+          if i_axi_wready = '1' then
+            if write_counter < i_transfers_count then
+              if beat_counter < beat_count then
+                if beat_counter = (beat_count - 1) then
+                  axi_wlast     <= '1';
+                  write_counter <= write_counter + 1;
+                end if;
+
+                beat_counter  <= beat_counter + 1;
+
+                o_axi_wdata   <= write_data;
+                o_axi_wstrb   <= (others => '1');
+                axi_wvalid    <= '1';
+              end if;
+            end if;
+          end if;
+        else
+          beat_counter        <= (others => '0');
+        end if;
+      end if;
+    end if;
+  end process;
+
+  WriteCompleter: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      if i_reset = '1' or i_write_enb = '0' then
+        axi_bready          <= '0';
+        write_responses     <= (others => '0');
+        write_errors        <= (others => '0');
+      else
+        axi_bready          <= '1';
+
+        if i_axi_bvalid = '1' then
+          write_responses   <= write_responses + 1;
+
+          if i_axi_bresp = AXI_BRESP_SLVERR or i_axi_bresp = AXI_BRESP_DECERR then
+            write_errors    <= write_errors + 1;
+          end if;
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- =======================
+  --       TIMESTAMPS       
+  -- =======================
+  StartStopTime: process(i_clock)
+  begin
+    if rising_edge(i_clock) then
+      if i_reset = '1' then
+        start_timestamp       <= (others => '0');
+        stop_timestamp        <= (others => '0');
+        timestamp_captured    <= '0';
+      else
+        if run = '1' and timestamp_captured = '0' then
+          start_timestamp     <= i_timebase;
+          timestamp_captured  <= '1';
+        elsif done = '1' and timestamp_captured = '1' then
+          stop_timestamp      <= i_timebase;
+          timestamp_captured  <= '0';
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- =======================
+  --       UNUSED AXI      
+  -- =======================
+  o_axi_awcache             <= K_AXI_CACHE_CONFIG;
+  o_axi_arcache             <= K_AXI_CACHE_CONFIG;
+
+end architecture;

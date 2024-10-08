@@ -1,2 +1,2 @@
 # MmAxiTrafficGenerator
-A traffic generator with memory-mapped AXI4 interface
+Simple traffic generator with memory-mapped AXI4 interface.
