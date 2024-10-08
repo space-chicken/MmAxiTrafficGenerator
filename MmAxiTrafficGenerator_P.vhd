@@ -39,7 +39,7 @@ package TrafficGenerator_P is
       -- CONTROL & STATUS SIGNALS
       ------------------------------------------------------
       i_transfers_count       : in  std_logic_vector(( G_COUNTERS_WIDTH      - 1) downto 0);          -- Total number of transfers
-      i_burst_size            : in  std_logic_vector(( G_COUNTERS_WIDTH      - 1) downto 0);          -- Burst size = ((number_of_bytes) / 32)
+      i_burst_size            : in  std_logic_vector(( G_COUNTERS_WIDTH      - 1) downto 0);          -- Burst size in bytes
       i_address               : in  std_logic_vector(( G_ADDRESS_WIDTH       - 1) downto 0);          -- Start address for sequential and random accesses
       i_boundary              : in  std_logic_vector(( G_ADDRESS_WIDTH       - 1) downto 0);          -- Last address
       i_run                   : in  std_logic;                                                        -- Module control signal

@@ -38,7 +38,7 @@ entity TrafficGenerator is
     -- CONTROL & STATUS SIGNALS
     ------------------------------------------------------
     i_transfers_count       : in  std_logic_vector(( G_COUNTERS_WIDTH        - 1) downto 0);        -- Total number of transfers
-    i_burst_size            : in  std_logic_vector(( G_COUNTERS_WIDTH        - 1) downto 0);        -- Burst size = ((number_of_bytes) / 32)
+    i_burst_size            : in  std_logic_vector(( G_COUNTERS_WIDTH        - 1) downto 0);        -- Burst size in bytes
     i_address               : in  std_logic_vector(( G_ADDRESS_WIDTH         - 1) downto 0);        -- Start address for sequential and random accesses
     i_boundary              : in  std_logic_vector(( G_ADDRESS_WIDTH         - 1) downto 0);        -- Last address
     i_run                   : in  std_logic;                                                        -- Module control signal
@@ -143,6 +143,7 @@ architecture RTL of TrafficGenerator is
   signal enable                         : std_logic                                         := '0';
   signal done                           : std_logic                                         := '0';
   signal busy                           : std_logic                                         := '0';
+  signal completed                      : std_logic                                         := '0';
   signal wait_response                  : std_logic                                         := '0';
   signal wait_data                      : std_logic                                         := '0';
   signal axi_awvalid                    : std_logic                                         := '0';
@@ -269,7 +270,7 @@ begin
   -- Control signals
   ready                     <= burst_size_valid and transfer_count_valid;
   run                       <= enable and ready;
-  done                      <= '1' when ((read_counter = i_transfers_count and wait_data = '0') or i_read_enb = '0') and ((write_counter = i_transfers_count and wait_response = '0') or i_write_enb = '0') and ready = '1' else '0';
+  completed                 <= '1' when ((read_counter = i_transfers_count and wait_data = '0') or i_read_enb = '0') and ((write_counter = i_transfers_count and wait_response = '0') or i_write_enb = '0') and ready = '1' and (i_write_enb = '1' or i_read_enb = '1') else '0';
   busy                      <= (enable or wait_response or wait_data) and ready;
 
   -- Module run control
@@ -278,11 +279,16 @@ begin
     if rising_edge(i_clock) then
       if i_reset = '1' then
         enable              <= '0';
+        done                <= '0';
       else
-        if i_run = '1' and ready = '1' and done = '0' then
+        if i_run = '1' and ready = '1' and completed = '0' then
           enable            <= '1';
-        elsif i_run = '0' or ready = '0' or done = '1' then
+          done              <= '0';
+        elsif i_run = '0' or ready = '0' or completed = '1' then
           enable            <= '0';
+          if completed = '1' then
+            done            <= '1';
+          end if;
         end if;
       end if;
     end if;
@@ -292,14 +298,20 @@ begin
   ReadRequester: process(i_clock)
   begin
     if rising_edge(i_clock) then
-      if i_reset = '1' or i_read_enb = '0' then
+      if i_reset = '1' or i_read_enb = '0' or run = '0' then
         axi_arvalid         <= '0';
+        read_address        <= i_address;
       else
-        axi_arvalid         <= '0';
-        if run = '1' and read_counter < i_transfers_count and i_axi_arready = '1' and wait_data = '0' then
+        if read_counter < i_transfers_count and i_axi_arready = '1' and wait_data = '0' then
+          -- Send request
           axi_arvalid       <= '1';
           wait_data         <= '1';
+        elsif axi_arvalid = '1' then
+          -- Update address
+          axi_arvalid       <= '0';
+          read_address      <= nxt_read_addr;
         elsif i_axi_rlast = '1' and wait_data = '1' then
+          -- Data received
           wait_data         <= '0';
         end if;
       end if;
@@ -309,47 +321,22 @@ begin
   WriteRequester: process(i_clock)
   begin
     if rising_edge(i_clock) then
-      if i_reset = '1' or i_write_enb = '0' then
+      if i_reset = '1' or i_write_enb = '0' or run = '0' then
         axi_awvalid         <= '0';
         wait_response       <= '0';
-      else
-        axi_awvalid         <= '0';
-        if run = '1' and write_counter < i_transfers_count and i_axi_awready = '1' and wait_response = '0' then
-          axi_awvalid       <= '1';
-          wait_response     <= '1';
-        elsif i_axi_bvalid = '1' and wait_response = '1' then
-          wait_response     <= '0';
-        end if;
-      end if;
-    end if;
-  end process;
-
-  -- Update addresses
-  ReadAddressChange: process(i_clock)
-  begin
-    if rising_edge(i_clock) then
-      -- On stop, set default address
-      if enable = '0' or i_read_enb = '0' then
-        read_address        <= i_address;
-      else
-        -- Set new address with staged value
-        if axi_arvalid = '1' then
-          read_address      <= nxt_read_addr;
-        end if;
-      end if;
-    end if;
-  end process;
-
-  WriteAddressChange: process(i_clock)
-  begin
-    if rising_edge(i_clock) then
-      -- On stop, set default address
-      if enable = '0' or i_write_enb = '0' then
         write_address       <= i_address;
       else
-        -- Set new address with staged value
-        if axi_awvalid = '1' then
+        if write_counter < i_transfers_count and i_axi_awready = '1' and wait_response = '0' then
+          -- Send request
+          axi_awvalid       <= '1';
+          wait_response     <= '1';
+        elsif axi_awvalid = '1' then
+          -- Update address
+          axi_awvalid       <= '0';
           write_address     <= nxt_write_addr;
+        elsif i_axi_bvalid = '1' and wait_response = '1' then
+          -- Response received
+          wait_response     <= '0';
         end if;
       end if;
     end if;
@@ -378,15 +365,21 @@ begin
   NextReadAddress: process(i_clock)
     variable random_value   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
     variable last_address   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
+    variable address_valid  : std_logic := '0';
   begin
     if rising_edge(i_clock) then
       if enable = '1' and i_read_enb = '1' then
         -- Generate next random address within range of allowed addresses
-        if i_random = '1' then
+        if i_random = '1' and (address_valid = '0' or axi_arvalid = '1') then
+          address_valid     := '0';
           random_value      := write_data(53 downto 26) & b"0000";
-          last_address      := nxt_read_addr + i_burst_size;
+          last_address      := random_value + i_burst_size;
           if last_address < i_boundary and random_value > i_address then
             nxt_read_addr   <= random_value;
+
+            -- Generate random address until the value is
+            -- within the range of allowed addresses
+            address_valid   := '1';
           end if;
         else
           if axi_arvalid = '1' then
@@ -399,6 +392,8 @@ begin
       else
         if i_random = '0' then
           nxt_read_addr     <= i_address + i_burst_size;
+        else
+          nxt_read_addr     <= i_address;
         end if;
       end if;
     end if;
@@ -407,15 +402,21 @@ begin
   NextWriteAddress: process(i_clock)
     variable random_value   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
     variable last_address   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
+    variable address_valid  : std_logic := '0';
   begin
     if rising_edge(i_clock) then
       if enable = '1' and i_write_enb = '1' then
         -- Generate next random address within range of allowed addresses
-        if i_random = '1' then
+        if i_random = '1' and (address_valid = '0' or axi_awvalid = '1') then
+          address_valid     := '0';
           random_value      := write_data(71 downto 44) & b"0000";
-          last_address      := nxt_write_addr + i_burst_size;
+          last_address      := random_value + i_burst_size;
           if last_address < i_boundary and random_value > i_address then
             nxt_write_addr  <= random_value;
+
+            -- Generate random address until the value is
+            -- within the range of allowed addresses
+            address_valid   := '1';
           end if;
         else
           if axi_awvalid = '1' then
@@ -428,6 +429,8 @@ begin
       else
         if i_random = '0' then
           nxt_write_addr    <= i_address + i_burst_size;
+        else
+          nxt_write_addr    <= i_address;
         end if;
       end if;
     end if;
@@ -535,7 +538,7 @@ begin
         if run = '1' and timestamp_captured = '0' then
           start_timestamp     <= i_timebase;
           timestamp_captured  <= '1';
-        elsif done = '1' and timestamp_captured = '1' then
+        elsif completed = '1' and timestamp_captured = '1' then
           stop_timestamp      <= i_timebase;
           timestamp_captured  <= '0';
         end if;
