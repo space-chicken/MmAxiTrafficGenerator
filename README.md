@@ -16,3 +16,18 @@ A simple traffic generator with an AXI4 memory-mapped interface that can be used
 |G_COUNTERS_WIDTH|32|Transfer counters width|
 |G_AXI_DATA_WIDTH|128|AXI data bus width|
 |G_AXI_ADDR_WIDTH|49|AXI address width|
+
+# Results
+## Read channel
+A waveform of 4x read transactions (burst size is 64 bytes) with sequential address generation is shown below:
+![Sequential read transactions](https://github.com/space-chicken/MmAxiTrafficGenerator/blob/2683fcebc3f278e7d375e943a27233915ee31382/Doc/waveforms/read_sequential.png?raw=true)
+
+A waveform of 4x read transactions (burst size is 64 bytes) with random address generation is shown below:
+![Random read transactions](https://github.com/space-chicken/MmAxiTrafficGenerator/blob/2683fcebc3f278e7d375e943a27233915ee31382/Doc/waveforms/read_random.png?raw=true)
+
+## Write channel 
+A waveform of 4x write transactions (burst size is 64 bytes) with sequential address generation is shown below:
+![Sequential write transactions](https://github.com/space-chicken/MmAxiTrafficGenerator/blob/2683fcebc3f278e7d375e943a27233915ee31382/Doc/waveforms/write_sequential.png?raw=true)
+
+A waveform of 4x write transactions (burst size is 64 bytes) with random address generation is shown below:
+![Random write transactions](https://github.com/space-chicken/MmAxiTrafficGenerator/blob/2683fcebc3f278e7d375e943a27233915ee31382/Doc/waveforms/write_random.png?raw=true)
