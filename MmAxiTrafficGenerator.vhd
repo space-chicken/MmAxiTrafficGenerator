@@ -153,11 +153,17 @@ architecture RTL of TrafficGenerator is
   signal axi_wvalid                     : std_logic                                         := '0';
   signal axi_wlast                      : std_logic                                         := '0';
   signal timestamp_captured             : std_logic                                         := '0';
-  signal beat_count                     : std_logic_vector(                    7  downto 0) := (others => '0');
-  signal beat_counter                   : std_logic_vector(                    7  downto 0) := (others => '0');
+  signal wr_nxt_address_valid           : std_logic                                         := '0';
+  signal rd_nxt_address_valid           : std_logic                                         := '0';
+  signal beat_count                     : std_logic_vector(                    8  downto 0) := (others => '0');
+  signal beat_counter                   : std_logic_vector(                    8  downto 0) := (others => '0');
   signal nxt_write_addr                 : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
+  signal write_boundary                 : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
+  signal wr_random_value                : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
   signal write_address                  : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
   signal nxt_read_addr                  : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
+  signal read_boundary                  : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
+  signal rd_random_value                : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
   signal read_address                   : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
   signal write_data                     : std_logic_vector((G_AXI_DATA_WIDTH - 1) downto 0) := (others => '0');
   signal write_responses                : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0) := (others => '0');
@@ -210,6 +216,11 @@ begin
   -- =======================
   --         OUTPUTS        
   -- =======================
+  assert (log2(G_AXI_DATA_WIDTH / 8) + beat_count'high) <= i_burst_size report "G_COUNTER_WIDTH is to small" severity error;
+
+  -- =======================
+  --         OUTPUTS        
+  -- =======================
   o_error_count             <= read_errors + write_errors;
   o_write_count             <= write_responses;
   o_read_count              <= read_counter;
@@ -229,8 +240,8 @@ begin
   end generate;
 
   -- AXI specification require o_axi_awlen to be (beat_count - 1)
-  o_axi_awlen               <= (beat_count - 1) when i_run = '1' and ready = '1' else (o_axi_awlen'range   => '0');
-  o_axi_awburst             <= "01"             when i_run = '1' and ready = '1' else (o_axi_awburst'range => '0');
+  o_axi_awlen               <= ((beat_count(7 downto 0)) - 1) when i_run = '1' and ready = '1' else (o_axi_awlen'range   => '0');
+  o_axi_awburst             <= "01"                           when i_run = '1' and ready = '1' else (o_axi_awburst'range => '0');
   o_axi_awsize              <= "001" when G_AXI_DATA_WIDTH =   16 and i_run = '1' and ready = '1' else
                                "010" when G_AXI_DATA_WIDTH =   32 and i_run = '1' and ready = '1' else
                                "011" when G_AXI_DATA_WIDTH =   64 and i_run = '1' and ready = '1' else
@@ -240,8 +251,8 @@ begin
                                "111" when G_AXI_DATA_WIDTH = 1024 and i_run = '1' and ready = '1' else "000";
 
   -- AXI specification require o_axi_arlen to be (beat_count - 1)
-  o_axi_arlen               <= (beat_count - 1) when i_run = '1' and ready = '1' else (o_axi_arlen'range   => '0');
-  o_axi_arburst             <= "01"             when i_run = '1' and ready = '1' else (o_axi_arburst'range => '0');
+  o_axi_arlen               <= ((beat_count(7 downto 0)) - 1) when i_run = '1' and ready = '1' else (o_axi_arlen'range   => '0');
+  o_axi_arburst             <= "01"                           when i_run = '1' and ready = '1' else (o_axi_arburst'range => '0');
   o_axi_arsize              <= "001" when G_AXI_DATA_WIDTH =   16 and i_run = '1' and ready = '1' else
                                "010" when G_AXI_DATA_WIDTH =   32 and i_run = '1' and ready = '1' else
                                "011" when G_AXI_DATA_WIDTH =   64 and i_run = '1' and ready = '1' else
@@ -263,9 +274,8 @@ begin
   burst_size_valid          <= '1' when (i_burst_size <= K_MAX_BURST_SIZE and i_burst_size >= K_MIN_BURST_SIZE) else '0';
   transfer_count_valid      <= '1' when (i_transfers_count > (i_transfers_count'range => '0'))                  else '0';
   
-  -- Beat count = (Burst size) / ((AXI data width) / 8) = ((Burst size) / 16);
-  beat_count((log2(G_AXI_DATA_WIDTH / 8) - 1) downto                         0 ) <= i_burst_size(beat_count'high downto log2(G_AXI_DATA_WIDTH / 8));
-  beat_count(beat_count'high                  downto log2(G_AXI_DATA_WIDTH / 8)) <= (others => '0');
+  -- Beat count = (Burst size in bytes) / ((AXI data width) / 8);
+  beat_count                <= i_burst_size((log2(G_AXI_DATA_WIDTH / 8) + beat_count'high) downto log2(G_AXI_DATA_WIDTH / 8));
 
   -- Control signals
   ready                     <= burst_size_valid and transfer_count_valid;
@@ -362,24 +372,22 @@ begin
   -- =======================
   --    ADDRESS GENERATOR     
   -- =======================
+  read_boundary             <= rd_random_value + i_burst_size;
   NextReadAddress: process(i_clock)
-    variable random_value   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
-    variable last_address   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
-    variable address_valid  : std_logic := '0';
   begin
     if rising_edge(i_clock) then
       if enable = '1' and i_read_enb = '1' then
-        -- Generate next random address within range of allowed addresses
-        if i_random = '1' and (address_valid = '0' or axi_arvalid = '1') then
-          address_valid     := '0';
-          random_value      := write_data(53 downto 26) & b"0000";
-          last_address      := random_value + i_burst_size;
-          if last_address < i_boundary and random_value > i_address then
-            nxt_read_addr   <= random_value;
+        if i_random = '1' then
+          if (rd_nxt_address_valid = '0' or axi_arvalid = '1') then
+            rd_nxt_address_valid    <= '0';
+            rd_random_value         <= write_data(45 downto 26) & b"000000000000";
+            if read_boundary < i_boundary and rd_random_value > i_address then
+              nxt_read_addr         <= rd_random_value;
 
-            -- Generate random address until the value is
-            -- within the range of allowed addresses
-            address_valid   := '1';
+              -- Generate random address until the value is
+              -- within the range of allowed addresses
+              rd_nxt_address_valid  <= '1';
+            end if;
           end if;
         else
           if axi_arvalid = '1' then
@@ -399,24 +407,22 @@ begin
     end if;
   end process;
 
+  write_boundary            <= wr_random_value + i_burst_size;
   NextWriteAddress: process(i_clock)
-    variable random_value   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
-    variable last_address   : std_logic_vector((G_COUNTERS_WIDTH - 1) downto 0);
-    variable address_valid  : std_logic := '0';
   begin
     if rising_edge(i_clock) then
       if enable = '1' and i_write_enb = '1' then
-        -- Generate next random address within range of allowed addresses
-        if i_random = '1' and (address_valid = '0' or axi_awvalid = '1') then
-          address_valid     := '0';
-          random_value      := write_data(71 downto 44) & b"0000";
-          last_address      := random_value + i_burst_size;
-          if last_address < i_boundary and random_value > i_address then
-            nxt_write_addr  <= random_value;
+        if i_random = '1' then
+          if (wr_nxt_address_valid = '0' or axi_awvalid = '1') then
+            wr_nxt_address_valid    <= '0';
+            wr_random_value         <= write_data(71 downto 52) & b"000000000000";
+            if write_boundary < i_boundary and wr_random_value > i_address then
+              nxt_write_addr        <= wr_random_value;
 
-            -- Generate random address until the value is
-            -- within the range of allowed addresses
-            address_valid   := '1';
+              -- Generate random address until the value is
+              -- within the range of allowed addresses
+              wr_nxt_address_valid  <= '1';
+            end if;
           end if;
         else
           if axi_awvalid = '1' then
