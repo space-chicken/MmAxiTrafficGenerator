@@ -240,26 +240,26 @@ begin
   end generate;
 
   -- AXI specification require o_axi_awlen to be (beat_count - 1)
-  o_axi_awlen               <= ((beat_count(7 downto 0)) - 1) when i_run = '1' and ready = '1' else (o_axi_awlen'range   => '0');
-  o_axi_awburst             <= "01"                           when i_run = '1' and ready = '1' else (o_axi_awburst'range => '0');
-  o_axi_awsize              <= "001" when G_AXI_DATA_WIDTH =   16 and i_run = '1' and ready = '1' else
-                               "010" when G_AXI_DATA_WIDTH =   32 and i_run = '1' and ready = '1' else
-                               "011" when G_AXI_DATA_WIDTH =   64 and i_run = '1' and ready = '1' else
-                               "100" when G_AXI_DATA_WIDTH =  128 and i_run = '1' and ready = '1' else
-                               "101" when G_AXI_DATA_WIDTH =  256 and i_run = '1' and ready = '1' else
-                               "110" when G_AXI_DATA_WIDTH =  512 and i_run = '1' and ready = '1' else
-                               "111" when G_AXI_DATA_WIDTH = 1024 and i_run = '1' and ready = '1' else "000";
+  o_axi_awlen               <= ((beat_count(7 downto 0)) - 1) when i_run = '1' else (o_axi_awlen'range   => '0');
+  o_axi_awburst             <= "01"                           when i_run = '1' else (o_axi_awburst'range => '0');
+  o_axi_awsize              <= "001" when G_AXI_DATA_WIDTH =   16 and i_run = '1' else
+                               "010" when G_AXI_DATA_WIDTH =   32 and i_run = '1' else
+                               "011" when G_AXI_DATA_WIDTH =   64 and i_run = '1' else
+                               "100" when G_AXI_DATA_WIDTH =  128 and i_run = '1' else
+                               "101" when G_AXI_DATA_WIDTH =  256 and i_run = '1' else
+                               "110" when G_AXI_DATA_WIDTH =  512 and i_run = '1' else
+                               "111" when G_AXI_DATA_WIDTH = 1024 and i_run = '1' else "000";
 
   -- AXI specification require o_axi_arlen to be (beat_count - 1)
-  o_axi_arlen               <= ((beat_count(7 downto 0)) - 1) when i_run = '1' and ready = '1' else (o_axi_arlen'range   => '0');
-  o_axi_arburst             <= "01"                           when i_run = '1' and ready = '1' else (o_axi_arburst'range => '0');
-  o_axi_arsize              <= "001" when G_AXI_DATA_WIDTH =   16 and i_run = '1' and ready = '1' else
-                               "010" when G_AXI_DATA_WIDTH =   32 and i_run = '1' and ready = '1' else
-                               "011" when G_AXI_DATA_WIDTH =   64 and i_run = '1' and ready = '1' else
-                               "100" when G_AXI_DATA_WIDTH =  128 and i_run = '1' and ready = '1' else
-                               "101" when G_AXI_DATA_WIDTH =  256 and i_run = '1' and ready = '1' else
-                               "110" when G_AXI_DATA_WIDTH =  512 and i_run = '1' and ready = '1' else
-                               "111" when G_AXI_DATA_WIDTH = 1024 and i_run = '1' and ready = '1' else "000";
+  o_axi_arlen               <= ((beat_count(7 downto 0)) - 1) when i_run = '1' else (o_axi_arlen'range   => '0');
+  o_axi_arburst             <= "01"                           when i_run = '1' else (o_axi_arburst'range => '0');
+  o_axi_arsize              <= "001" when G_AXI_DATA_WIDTH =   16 and i_run = '1' else
+                               "010" when G_AXI_DATA_WIDTH =   32 and i_run = '1' else
+                               "011" when G_AXI_DATA_WIDTH =   64 and i_run = '1' else
+                               "100" when G_AXI_DATA_WIDTH =  128 and i_run = '1' else
+                               "101" when G_AXI_DATA_WIDTH =  256 and i_run = '1' else
+                               "110" when G_AXI_DATA_WIDTH =  512 and i_run = '1' else
+                               "111" when G_AXI_DATA_WIDTH = 1024 and i_run = '1' else "000";
 
   o_axi_rready              <= axi_rready;
   o_axi_bready              <= axi_bready;
