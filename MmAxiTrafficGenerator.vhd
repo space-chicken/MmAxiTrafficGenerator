@@ -24,7 +24,10 @@ entity TrafficGenerator is
     G_ADDRESS_WIDTH         : integer := 32;
     G_COUNTERS_WIDTH        : integer := 32;
     G_AXI_DATA_WIDTH        : integer := 128;
-    G_AXI_ADDR_WIDTH        : integer := 49
+    G_AXI_ADDR_WIDTH        : integer := 49;
+    G_USE_TIME_COUNTER      : boolean := FALSE;
+    G_READ_IDLE_CYCLES      : integer := 0;
+    G_WRITE_IDLE_CYCLES     : integer := 0
   );
   port
   (
@@ -134,6 +137,12 @@ architecture RTL of TrafficGenerator is
   constant AXI_BRESP_DECERR             : std_logic_vector(                    1  downto 0) := b"11";
 
   ------------------------------------------------------
+  -- TYPES
+  ------------------------------------------------------
+  subtype  T_TIME_COUNTER               is integer range 0 to G_TIME_COUNTER_DIVIDER;
+  subtype  T_IDLE_COUNTER               is integer range 0 to G_IDLE_CLOCK_CYCLES;
+
+  ------------------------------------------------------
   -- SIGNALS
   ------------------------------------------------------
   signal burst_size_valid               : std_logic                                         := '0';
@@ -155,6 +164,9 @@ architecture RTL of TrafficGenerator is
   signal timestamp_captured             : std_logic                                         := '0';
   signal wr_nxt_address_valid           : std_logic                                         := '0';
   signal rd_nxt_address_valid           : std_logic                                         := '0';
+  signal hold                           : std_logic                                         := '0';
+  signal read_hold                      : std_logic                                         := '0';
+  signal write_hold                     : std_logic                                         := '0';
   signal beat_count                     : std_logic_vector(                    8  downto 0) := (others => '0');
   signal beat_counter                   : std_logic_vector(                    8  downto 0) := (others => '0');
   signal nxt_write_addr                 : std_logic_vector((G_ADDRESS_WIDTH  - 1) downto 0) := (others => '0');
@@ -176,6 +188,10 @@ architecture RTL of TrafficGenerator is
   signal random_data                    : std_logic_vector((G_AXI_DATA_WIDTH - 1) downto 0) := (others => '0');
   signal start_timestamp                : std_logic_vector((G_TIMEBASE_WIDTH - 1) downto 0) := (others => '0');
   signal stop_timestamp                 : std_logic_vector((G_TIMEBASE_WIDTH - 1) downto 0) := (others => '0');
+  signal timebase                       : std_logic_vector((G_TIMEBASE_WIDTH - 1) downto 0) := (others => '0');
+  signal time_counter                   : T_TIME_COUNTER;
+  signal read_idle_count                : T_IDLE_COUNTER;
+  signal write_idle_count               : T_IDLE_COUNTER;
 
   ------------------------------------------------------
   -- ATTRIBUTES (DEBUG)
@@ -197,6 +213,8 @@ architecture RTL of TrafficGenerator is
   attribute KEEP of write_counter       : signal is "TRUE";
   attribute KEEP of start_timestamp     : signal is "TRUE";
   attribute KEEP of stop_timestamp      : signal is "TRUE";
+  attribute KEEP of read_idle_count     : signal is "TRUE";
+  attribute KEEP of write_idle_count    : signal is "TRUE";
 
   ------------------------------------------------------
   -- FUNCTIONS
@@ -282,6 +300,7 @@ begin
   run                       <= enable and ready;
   completed                 <= '1' when ((read_counter = i_transfers_count and wait_data = '0') or i_read_enb = '0') and ((write_counter = i_transfers_count and wait_response = '0') or i_write_enb = '0') and ready = '1' and (i_write_enb = '1' or i_read_enb = '1') else '0';
   busy                      <= (enable or wait_response or wait_data) and ready;
+  hold                      <= read_hold or write_hold;
 
   -- Module run control
   RunStopControl: process(i_clock)
@@ -305,52 +324,126 @@ begin
   end process;
 
   -- Requests sender
-  ReadRequester: process(i_clock)
-  begin
-    if rising_edge(i_clock) then
-      if i_reset = '1' or i_read_enb = '0' or run = '0' then
-        axi_arvalid         <= '0';
-        read_address        <= i_address;
-      else
-        if read_counter < i_transfers_count and i_axi_arready = '1' and wait_data = '0' then
-          -- Send request
-          axi_arvalid       <= '1';
-          wait_data         <= '1';
-        elsif axi_arvalid = '1' then
-          -- Update address
-          axi_arvalid       <= '0';
-          read_address      <= nxt_read_addr;
-        elsif i_axi_rlast = '1' and wait_data = '1' then
-          -- Data received
-          wait_data         <= '0';
+  FastReadRequester: if G_READ_IDLE_CYCLES = 0 then
+    ReadRequester: process(i_clock)
+    begin
+      if rising_edge(i_clock) then
+        if i_reset = '1' or i_read_enb = '0' or run = '0' then
+          axi_arvalid         <= '0';
+          read_address        <= i_address;
+        else
+          if read_counter < i_transfers_count and i_axi_arready = '1' and wait_data = '0' then
+            -- Send request
+            axi_arvalid       <= '1';
+            wait_data         <= '1';
+          elsif axi_arvalid = '1' then
+            -- Update address
+            axi_arvalid       <= '0';
+            read_address      <= nxt_read_addr;
+          elsif i_axi_rlast = '1' and wait_data = '1' then
+            -- Data received
+            wait_data         <= '0';
+          end if;
         end if;
       end if;
-    end if;
-  end process;
+    end process;
+  end generate;
 
-  WriteRequester: process(i_clock)
-  begin
-    if rising_edge(i_clock) then
-      if i_reset = '1' or i_write_enb = '0' or run = '0' then
-        axi_awvalid         <= '0';
-        wait_response       <= '0';
-        write_address       <= i_address;
-      else
-        if write_counter < i_transfers_count and i_axi_awready = '1' and wait_response = '0' then
-          -- Send request
-          axi_awvalid       <= '1';
-          wait_response     <= '1';
-        elsif axi_awvalid = '1' then
-          -- Update address
-          axi_awvalid       <= '0';
-          write_address     <= nxt_write_addr;
-        elsif i_axi_bvalid = '1' and wait_response = '1' then
-          -- Response received
-          wait_response     <= '0';
+  SlowReadRequester: if G_READ_IDLE_CYCLES > 0 then
+    ReadRequester: process(i_clock)
+    begin
+      if rising_edge(i_clock) then
+        if i_reset = '1' or i_read_enb = '0' or run = '0' then
+          axi_arvalid         <= '0';
+          read_address        <= i_address;
+          read_idle_count     <=  0;
+          read_hold           <= '0';
+        else
+          if read_counter < i_transfers_count and i_axi_arready = '1' and wait_data = '0' then
+            if read_idle_count = G_READ_IDLE_CYCLES then
+              -- Send request
+              axi_arvalid       <= '1';
+              wait_data         <= '1';
+              read_idle_count   <=  0;
+              read_hold         <= '0';
+            else
+              -- Wait x number of clock cycles
+              read_idle_count   <= read_idle_count + 1;
+              read_hold         <= '1';
+            end if;
+          elsif axi_arvalid = '1' then
+            -- Update address
+            axi_arvalid       <= '0';
+            read_address      <= nxt_read_addr;
+          elsif i_axi_rlast = '1' and wait_data = '1' then
+            -- Data received
+            wait_data         <= '0';
+          end if;
         end if;
       end if;
-    end if;
-  end process;
+    end process;
+  end generate;
+
+  FastWriteRequester: if G_WRITE_IDLE_CYCLES = 0 then
+    WriteRequester: process(i_clock)
+    begin
+      if rising_edge(i_clock) then
+        if i_reset = '1' or i_write_enb = '0' or run = '0' then
+          axi_awvalid         <= '0';
+          wait_response       <= '0';
+          write_address       <= i_address;
+        else
+          if write_counter < i_transfers_count and i_axi_awready = '1' and wait_response = '0' then
+            -- Send request
+            axi_awvalid       <= '1';
+            wait_response     <= '1';
+          elsif axi_awvalid = '1' then
+            -- Update address
+            axi_awvalid       <= '0';
+            write_address     <= nxt_write_addr;
+          elsif i_axi_bvalid = '1' and wait_response = '1' then
+            -- Response received
+            wait_response     <= '0';
+          end if;
+        end if;
+      end if;
+    end process;
+  end generate;
+
+  SlowWriteRequester: if G_WRITE_IDLE_CYCLES > 0 then
+    WriteRequester: process(i_clock)
+    begin
+      if rising_edge(i_clock) then
+        if i_reset = '1' or i_write_enb = '0' or run = '0' then
+          axi_awvalid         <= '0';
+          wait_response       <= '0';
+          write_address       <= i_address;
+          write_idle_count    <=  0;
+          write_hold          <= '0';
+        else
+          if write_counter < i_transfers_count and i_axi_awready = '1' and wait_response = '0' then
+            if write_idle_count = G_WRITE_IDLE_CYCLES then
+              -- Send request
+              axi_awvalid       <= '1';
+              wait_response     <= '1';
+              write_idle_count  <=  0;
+              write_hold        <= '0';
+            else
+              write_idle_count  <= write_idle_count + 1;
+              write_hold        <= '1';
+            end if;
+          elsif axi_awvalid = '1' then
+            -- Update address
+            axi_awvalid       <= '0';
+            write_address     <= nxt_write_addr;
+          elsif i_axi_bvalid = '1' and wait_response = '1' then
+            -- Response received
+            wait_response     <= '0';
+          end if;
+        end if;
+      end if;
+    end process;
+  end generate;
 
   -- =======================
   --     DATA GENERATOR     
@@ -533,6 +626,30 @@ begin
   -- =======================
   --       TIMESTAMPS       
   -- =======================
+  -- Use external timebase
+  UseExternalTimebase: if G_USE_TIME_COUNTER = FALSE generate
+    timebase                <= i_timebase;
+  end generate;
+
+  -- Use internal timebase
+  UseInternalTimebase: if G_USE_TIME_COUNTER = TRUE generate
+    TimebaseProcess: process(i_clock)
+    begin
+      if rising_edge(i_clock) then
+        if hold = '0' then
+          if time_counter < G_TIME_COUNTER_DIVIDER then
+            time_counter    <= time_counter + 1;
+          else
+            time_counter    <= 0;
+            timebase        <= timebase + 1;
+          end if;
+        end if;
+      end if;
+    end process;
+  end generate;
+  
+
+  -- Capture start/stop timestamps
   StartStopTime: process(i_clock)
   begin
     if rising_edge(i_clock) then
@@ -542,10 +659,10 @@ begin
         timestamp_captured    <= '0';
       else
         if run = '1' and timestamp_captured = '0' then
-          start_timestamp     <= i_timebase;
+          start_timestamp     <= timebase;
           timestamp_captured  <= '1';
         elsif completed = '1' and timestamp_captured = '1' then
-          stop_timestamp      <= i_timebase;
+          stop_timestamp      <= timebase;
           timestamp_captured  <= '0';
         end if;
       end if;

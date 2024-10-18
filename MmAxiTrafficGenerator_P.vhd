@@ -25,7 +25,10 @@ package TrafficGenerator_P is
       G_ADDRESS_WIDTH         : integer := 32;
       G_COUNTERS_WIDTH        : integer := 32;
       G_AXI_DATA_WIDTH        : integer := 128;
-      G_AXI_ADDR_WIDTH        : integer := 49
+      G_AXI_ADDR_WIDTH        : integer := 49;
+      G_USE_TIME_COUNTER      : boolean := FALSE;
+      G_READ_IDLE_CYCLES      : integer := 0;
+      G_WRITE_IDLE_CYCLES     : integer := 0
     );
     port
     (
